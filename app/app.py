@@ -81,54 +81,73 @@ with tab1:
 with tab2:
     st.subheader("Seguimiento de Cambio de Proveedor")
 
-    # Bloque de ingesta asistida por IA (Humano en el bucle)
-    with st.expander("📩 Procesar correo de proveedor con IA", expanded=False):
-        correo_raw = st.text_area("Pega aquí el correo del proveedor:", height=130,
-                                  placeholder="Ej: Estimados, confirmamos visita de instalación de fibra para Sucursal Valparaíso el 10/12/2026 a las 09:30...")
+    # Bloque de ingesta asistida por IA (Múltiples sucursales con tabla editable)
+    with st.expander("📩 Procesar correo o tabla de proveedor con IA", expanded=True):
+        correo_raw = st.text_area("Pega aquí el correo o tabla del proveedor:", height=130,
+                                  placeholder="Puedes pegar una o varias líneas con código MINSAL, contacto, fecha, etc.")
         if st.button("Analizar correo con Ollama"):
             if correo_raw.strip():
-                with st.spinner("Extrayendo datos con phi3..."):
+                with st.spinner("Extrayendo sucursales con Ollama..."):
                     try:
-                        st.session_state.propuesta_mig = ai_engine.extraer_datos_migracion(correo_raw)
+                        lista_extraida = ai_engine.extraer_datos_migracion(correo_raw)
+                        st.session_state.propuesta_mig = pd.DataFrame(lista_extraida)
                     except Exception as e:
                         st.error(f"Error al interpretar JSON de Ollama: {e}")
             else:
-                st.warning("Pega un correo primero.")
+                st.warning("Pega un correo o tabla primero.")
 
-        if "propuesta_mig" in st.session_state:
-            prop = st.session_state.propuesta_mig
-            st.info("Revisa y corrige los datos extraídos antes de guardar:")
-            with st.form("form_confirmar_mig"):
-                c1, c2 = st.columns(2)
-                cod = c1.text_input("Código Sucursal", value=prop.get("codigo_sucursal") or "")
-                nom = c2.text_input("Nombre Sucursal", value=prop.get("nombre_sucursal") or "")
+        if "propuesta_mig" in st.session_state and not st.session_state.propuesta_mig.empty:
+            st.info(f"Se detectaron **{len(st.session_state.propuesta_mig)} sucursal(es)**. Revisa o edita cualquier celda antes de guardar:")
+            df_editado = st.data_editor(
+                st.session_state.propuesta_mig,
+                num_rows="dynamic",
+                use_container_width=True,
+                key="editor_migracion"
+            )
 
-                fases = ["Factibilidad Técnica", "Instalación FO", "Pruebas", "Producción"]
-                fase_idx = fases.index(prop.get("fase_actual")) if prop.get("fase_actual") in fases else 0
-                fase = c1.selectbox("Fase Actual", fases, index=fase_idx)
+            c_ok, c_cancel = st.columns([2, 1])
+            if c_ok.button("✅ Confirmar y Guardar todas en PostgreSQL", use_container_width=True):
+                guardadas = 0
+                for _, row in df_editado.iterrows():
+                    cod = str(row.get("codigo_sucursal") or "").strip()
+                    nom = str(row.get("nombre_sucursal") or "").strip()
+                    if not cod or not nom:
+                        continue
 
-                estados = ["Pendiente", "Tentativa", "Confirmada", "Realizada"]
-                est_idx = estados.index(prop.get("estado_visita")) if prop.get("estado_visita") in estados else 1
-                estado = c2.selectbox("Estado Visita", estados, index=est_idx)
+                    fecha_raw = str(row.get("fecha_visita") or "").strip()
+                    fecha_val = fecha_raw if fecha_raw and fecha_raw.lower() != "none" else None
+                    datos_tec = str(row.get("datos_tecnicos") or "").strip()
+                    datos_tec = datos_tec if datos_tec and datos_tec.lower() != "none" else None
 
-                fecha_v = st.text_input("Fecha Visita (YYYY-MM-DD HH:MM o vacío)", value=prop.get("fecha_visita") or "")
-                obs = st.text_area("Observaciones", value=prop.get("observaciones") or "")
+                    db.registrar_avance_migracion(
+                        codigo_sucursal=cod,
+                        nombre_sucursal=nom,
+                        fase_actual=row.get("fase_actual") or "Factibilidad Técnica",
+                        fecha_visita=fecha_val,
+                        estado_visita=row.get("estado_visita") or "Tentativa",
+                        observaciones=row.get("observaciones") or None,
+                        direccion=row.get("direccion") or None,
+                        contacto_nombre=row.get("contacto_nombre") or None,
+                        contacto_fono=row.get("contacto_fono") or None,
+                        notas_extra=datos_tec
+                    )
 
-                if st.form_submit_button("✅ Confirmar y Guardar en PostgreSQL"):
-                    if cod.strip() and nom.strip():
-                        db.registrar_avance_migracion(
-                            codigo_sucursal=cod,
-                            nombre_sucursal=nom,
-                            fase_actual=fase,
-                            fecha_visita=fecha_v.strip() or None,
-                            estado_visita=estado,
-                            observaciones=obs.strip() or None
+                    # Si hay códigos de servicio, switches o anexos, también se guardan en Qdrant
+                    if datos_tec:
+                        ai_engine.guardar_memoria(
+                            f"Sucursal {nom} ({cod}): {datos_tec}",
+                            tipo="infraestructura",
+                            etiqueta=cod
                         )
-                        del st.session_state.propuesta_mig
-                        st.success(f"Sucursal {cod} actualizada correctamente.")
-                        st.rerun()
-                    else:
-                        st.error("Código y Nombre de sucursal son obligatorios.")
+                    guardadas += 1
+
+                del st.session_state.propuesta_mig
+                st.success(f"Se guardaron {guardadas} sucursal(es) correctamente.")
+                st.rerun()
+
+            if c_cancel.button("Descartar", use_container_width=True):
+                del st.session_state.propuesta_mig
+                st.rerun()
 
     # Métricas y tabla en vivo
     datos_mig = db.get_migracion()

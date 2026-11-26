@@ -64,20 +64,36 @@ def buscar_memoria(consulta: str, limite: int = 4) -> list:
     return [r.payload for r in resultados]
 
 
-def extraer_datos_migracion(texto_correo: str) -> dict:
-    """Pide a Ollama extraer datos estructurados de un correo del proveedor en formato JSON."""
-    prompt = f"""Eres un asistente técnico de NOC. Extrae los datos del siguiente correo de migración de enlaces.
-Devuelve ÚNICAMENTE un objeto JSON válido con estas claves exactas (usa null si un dato no aparece):
+def extraer_datos_migracion(texto_correo: str) -> list:
+    """Extrae una o múltiples sucursales desde un correo o tabla pegada."""
+    prompt = f"""Eres un asistente técnico del NOC de FONASA. Analiza el siguiente texto o tabla de correo.
+Puede contener UNA o VARIAS sucursales (una por línea o párrafo). Extrae TODAS las sucursales mencionadas.
+
+REGLAS ESTRICTAS:
+1. El "codigo_sucursal" es el Código MINSAL, que tiene formato de 7 u 8 dígitos, un guion y 3 dígitos (ejemplos: 0403601-001, 13101001-006, 1011810-118).
+2. Si aparece dirección, nombre de contacto o teléfono de la sucursal, colócalos en sus campos respectivos.
+3. Si se mencionan códigos de servicio de enlaces, switches, equipos o anexos telefónicos, guárdalos en "datos_tecnicos".
+4. Convierte fechas como "16-nov-26" al formato "2026-11-16".
+
+Devuelve ÚNICAMENTE un JSON válido con esta estructura exacta:
 {{
-  "codigo_sucursal": "código corto o sigla en mayúsculas, ej: CONCE-01",
-  "nombre_sucursal": "nombre de la sucursal o ciudad",
-  "fase_actual": "Factibilidad Técnica | Instalación FO | Pruebas | Producción",
-  "fecha_visita": "YYYY-MM-DD HH:MM o null",
-  "estado_visita": "Tentativa | Confirmada | Realizada",
-  "observaciones": "resumen breve de requisitos, bloqueos o notas"
+  "sucursales": [
+    {{
+      "codigo_sucursal": "ej: 0403601-001",
+      "nombre_sucursal": "nombre completo de la sucursal",
+      "direccion": "dirección física o null",
+      "contacto_nombre": "nombre del contacto local o null",
+      "contacto_fono": "teléfono o anexo o null",
+      "fase_actual": "Factibilidad Técnica | Instalación FO | Pruebas | Producción",
+      "fecha_visita": "YYYY-MM-DD o YYYY-MM-DD HH:MM o null",
+      "estado_visita": "Pendiente | Tentativa | Confirmada | Realizada",
+      "observaciones": "estado operativo, requisitos de acceso o bloqueos",
+      "datos_tecnicos": "códigos de servicio, switches, enlaces o anexos mencionados (o null)"
+    }}
+  ]
 }}
 
-Correo:
+Texto a analizar:
 {texto_correo}
 """
     r = requests.post(
@@ -88,11 +104,26 @@ Correo:
             "format": "json",
             "stream": False,
         },
-        timeout=60,
+        timeout=120,
     )
     r.raise_for_status()
-    raw = r.json().get("response", "{}").strip()
-    return json.loads(raw)
+    data = json.loads(r.json().get("response", "{}").strip())
+
+    # Normaliza la salida para asegurar SIEMPRE una lista de diccionarios
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        # Si existe la clave "sucursales"
+        if "sucursales" in data:
+            val = data["sucursales"]
+            return val if isinstance(val, list) else [val]
+        # Si el modelo inventó otra clave que contiene una lista (ej: "data", "items")
+        for v in data.values():
+            if isinstance(v, list) and v and isinstance(v[0], dict):
+                return v
+        # Si devolvió un solo objeto directo
+        return [data]
+    return []
 
 
 def responder_asistente(pregunta: str, contexto_sql: str, contexto_qdrant: list) -> str:

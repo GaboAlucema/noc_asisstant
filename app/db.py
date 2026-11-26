@@ -50,9 +50,18 @@ def buscar_sucursales(termino=""):
 
 # --- MIGRACIÓN NACIONAL ---
 def registrar_avance_migracion(codigo_sucursal, nombre_sucursal, fase_actual=None,
-                               fecha_visita=None, estado_visita="Tentativa", observaciones=None):
-    """Asegura que la sucursal exista y registra o actualiza su estado de migración."""
-    sucursal_id = upsert_sucursal(codigo_sucursal, nombre_sucursal)
+                               fecha_visita=None, estado_visita="Tentativa", observaciones=None,
+                               direccion=None, contacto_nombre=None, contacto_fono=None,
+                               notas_extra=None):
+    """Asegura que la sucursal exista (actualizando contacto/dirección/técnicos) y registra su avance."""
+    sucursal_id = upsert_sucursal(
+        codigo=codigo_sucursal,
+        nombre=nombre_sucursal,
+        direccion=direccion,
+        contacto_nombre=contacto_nombre,
+        contacto_fono=contacto_fono,
+        notas_extra=notas_extra
+    )
 
     with get_conn() as conn:
         with conn.cursor() as cur:
